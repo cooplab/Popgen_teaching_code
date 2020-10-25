@@ -5,7 +5,7 @@
 # Find out more about building applications with Shiny here:
 #
 #    http://shiny.rstudio.com/
-#
+#   Shiny server and panel setup borrowed from Silas Tittes https://github.com/silastittes/shiny_popgen
 
 library(shiny)
 
