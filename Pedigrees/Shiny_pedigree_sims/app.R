@@ -141,18 +141,11 @@ ui <- pageWithSidebar(
     headerPanel = headerPanel("Pedigree Identity by Descent."),
     
     sidebarPanel(
-        
-        #numericInput(inputId = "N", label = "Population size (N) (1-1e5)", value = 100, 
-        #             min = 1, max = 1e5, step = 10),
-
-            #actionButton("go", "Go"),
-        selectInput("Pedigree_type", "Pedigree_type:",
+                selectInput("Pedigree_type", "Pedigree_type:",
                         choices = c("Full sib","Half sib","Full first cousins")),
         checkboxInput("Inbreed", "inbred child", FALSE),
         actionButton("goButton", "GO"),
-        #plotOutput(outputId = "freq"),
-        #downloadButton(outputId = 'drift_out.csv', label = 'Download')
-    ), 
+        ), 
     mainPanel =  mainPanel(
         plotOutput(outputId = 'freq')
     )
