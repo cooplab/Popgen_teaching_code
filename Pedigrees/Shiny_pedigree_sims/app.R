@@ -32,23 +32,6 @@ plot.ped.allele<-function(my.ped,which.allele,allele.cols,my.cex=3){
     
 }
 
-old.generate.alleles<-function(my.ped,all.alleles){
-    for(i in 1:nrow(my.ped)){
-        my.ind<-unlist(my.ped[i,])
-        if(my.ind["mumid"]!=0){
-            mat.allele<-sample(all.alleles[my.ind["mumid"],],1)
-        }else{
-            mat.allele<-NA
-        }
-        if(my.ind["dadid"]!=0){
-            pat.allele<-sample(all.alleles[my.ind["dadid"],],1)
-        }else{
-            pat.allele<-NA
-        }
-        all.alleles[i,]<-c(mat.allele,pat.allele)
-    }
-    all.alleles
-}
 
 generate.alleles<-function(my.ped,all.alleles){
     for(i in 1:nrow(my.ped)){
