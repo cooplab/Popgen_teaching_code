@@ -12,6 +12,8 @@ dl_pkgs <- subset(pkgs,!pkgs %in% rownames(installed.packages()))
 if(length(dl_pkgs)!=0){
   for(i in dl_pkgs) install.packages(i)
 }
+### above borrowed from https://github.com/cjbattey/ldsim
+
 library(shiny)
 
 ##choose one of the following
