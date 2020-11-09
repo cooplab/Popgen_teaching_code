@@ -190,8 +190,8 @@ one.gen.sel<-function(L=1000,environ.var,sel,plot.geno=FALSE,add.arrows=FALSE){
     abline(v= mean(child.pheno),col="red",lwd=3)
     
     if(add.arrows){
-        arrows(x0=0,x1=mean(child.pheno),y0=2600,y1=2600,col="blue",lwd=2,length=0.1,code=3)
-        text(x=mean(child.pheno)/2, y=2950,"R",col="blue",cex=1.5)
+        arrows(x0=0,x1=mean(child.pheno),y0=500,y1=500,col="blue",lwd=2,length=0.1,code=3)
+        text(x=mean(child.pheno)/2, y=800,"R",col="blue",cex=1.5)
     }
     
     ##Mean phenotype after selection
