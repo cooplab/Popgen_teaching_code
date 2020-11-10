@@ -25,4 +25,4 @@ runGitHub("cooplab/Popgen_teaching_code/",subdir ="IBD_pedigree")
 This software is free for use or modification under the GNU General Public License 3.0 (https://opensource.org/licenses/GPL-3.0)
 
 
-![Shiny pic of two allele simulation](shiny_app_demo_pics/genetic_drift_sims_two_alleles.png)
+![Shiny pic of two allele simulation](shiny_app_demo_pics/genetic_drift_sims_two_alleles.png  | width=100)
