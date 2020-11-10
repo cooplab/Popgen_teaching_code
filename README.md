@@ -24,5 +24,12 @@ runGitHub("cooplab/Popgen_teaching_code/",subdir ="IBD_pedigree")
 ```
 This software is free for use or modification under the GNU General Public License 3.0 (https://opensource.org/licenses/GPL-3.0)
 
-
+```R
+runGitHub("cooplab/Popgen_teaching_code/",subdir ="IBD_pedigree")
+```
+![Shiny pic of IBD simulation](shiny_app_demo_pics/IBD_homozygous_IBD.png)
+```R
+runGitHub("cooplab/Popgen_teaching_code/",subdir = "Simulate_drift")
+```
 ![Shiny pic of two allele simulation](shiny_app_demo_pics/genetic_drift_sims_two_alleles.png)
+
