@@ -32,4 +32,14 @@ runGitHub("cooplab/Popgen_teaching_code/",subdir ="IBD_pedigree")
 runGitHub("cooplab/Popgen_teaching_code/",subdir = "Simulate_drift")
 ```
 ![Shiny pic of two allele simulation](shiny_app_demo_pics/genetic_drift_sims_two_alleles.png)
+```R
+runGitHub("cooplab/Popgen_teaching_code/",subdir ="Simple_coalescent")
+```
+![Shiny pic of IBD simulation](shiny_app_demo_pics/coal_sims_n3.png)
+```R
+runGitHub("cooplab/Popgen_teaching_code/",subdir ="Pheno_selection/")
+```
+![Shiny pic of IBD simulation](shiny_app_demo_pics/Pheno_selection.png)
+
+
 
