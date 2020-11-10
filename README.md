@@ -39,6 +39,7 @@ runGitHub("cooplab/Popgen_teaching_code/",subdir ="Simple_coalescent")
 ```R
 runGitHub("cooplab/Popgen_teaching_code/",subdir ="Pheno_selection/")
 ```
+Note the three tabs
 ![Shiny pic of IBD simulation](shiny_app_demo_pics/Pheno_selection.png)
 
 
