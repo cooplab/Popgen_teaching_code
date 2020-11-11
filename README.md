@@ -48,7 +48,6 @@ Note the three tabs
 ```R
 runGitHub("cooplab/Popgen_teaching_code/",subdir ="2d_fitness_landscape")
 ```
-Note the three tabs
 ![Shiny pic of 2D fitness landscape app](shiny_app_demo_pics/2D_fitness_landscape.png)
 
 
