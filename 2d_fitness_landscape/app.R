@@ -81,19 +81,33 @@ add.genetic.corr.points<-function(genetic_corr){
 
 ui <- fluidPage(
     fluidRow(
-               plotOutput("plot1", click = "plot_click")
-        ),
-    fluidRow(
-    sidebarPanel(
-        sliderInput("genetic_corr",
-                    "Genetic Correlation:",
-                    min = -0.99,
-                    max = 0.99,
-                    value = 0)
+        helpText("\t A 2 dimensional mean fitness landscape as a function of the population mean of two phenotypes.
+        Redder colours corresponding to higher fitness. Click on the landscape to start a 
+                 population off in a particular combination of mean phenotypes for the population. 
+                 Each arrow drawn represents a single generation step
+                 taken on the landscape according to the deterministic multivariate breeder's equation. 
+                 The population evolves for a total of 50 generations, 
+                 the later steps may be too small to see. 
+                 There is equal additive genetic variance for both phenotypes 
+                 and the initial genetic correlation is set to 0. 
+                 You can play with the genetic correlation below, 
+                 and the inset in the bottom left corner shows you a visualization of the correlation of breeding values for the two phenotypes."),
+        plotOutput("plot1", click = "plot_click")
     ),
-    actionButton("updateplot", "Update Plot:")
-    )
-    
+    fluidRow(
+        column(width=4,),
+        column(width=8,
+                    #sidebarPanel(
+                        sliderInput("genetic_corr",
+                                    "Genetic Correlation:",
+                                    min = -0.99,
+                                    max = 0.99,
+                                    value = 0)
+                    #),
+                    #actionButton("updateplot", "Update Plot:")
+        ),
+        
+    )   
 )
 
 # ui <- pageWithSidebar( 
