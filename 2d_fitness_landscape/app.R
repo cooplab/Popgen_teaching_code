@@ -80,6 +80,7 @@ add.genetic.corr.points<-function(genetic_corr){
 }
 
 ui <- fluidPage(
+    headerPanel = headerPanel("Fitness landscape for two phenotypes."),
     fluidRow(
         helpText("\t A 2 dimensional mean fitness landscape as a function of the population mean of two phenotypes.
         Redder colours corresponding to higher fitness. Click on the landscape to start a 
