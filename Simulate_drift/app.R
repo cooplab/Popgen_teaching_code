@@ -152,7 +152,7 @@ ui <- pageWithSidebar(
                         max = 100,
                         value = 10),
             selectInput("initialstate", "Initial state:",
-                        choices = c("all same","all different","two alleles","single mutution")),
+                        choices = c("all same","all different","two alleles","single mutation")),
             sliderInput("mu",
                         "Mut. Rate mu:",
                         min = 0.0,
