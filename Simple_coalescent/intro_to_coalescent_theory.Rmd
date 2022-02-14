@@ -1,0 +1,1022 @@
+---
+title: "Introduction to Coalescent Theory"
+author: "James Kitchens"
+date: "2/9/2022"
+output:
+  html_document:
+    code_folding: hide
+    theme: readable
+runtime: shiny
+---
+
+<style>
+  p.caption {
+    font-size: 0.75em;
+    padding-bottom: 50px;
+    margin-top: -25px;
+  }
+  .shiny-plot-output {
+    max-height: 400px;
+  }
+  .hljs {
+    font-size: 0.75em;
+  }
+</style>
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(ggforce)
+library(shiny)
+
+generate_parent_matrix <- function(pop_size, ploidy, generations) {
+  
+  # Creates a matrix with values describing the parent of each individual
+  # The parent is chosen at random from the previous generation (equal probability)
+  #
+  # Inputs:
+  #   pop_size: int for population size
+  #   ploidy: int for number of paired individuals
+  #   generations: int for total number of generations
+  #
+  # Returns the matrix described above
+  #
+  # **Should this be long or wide? Wide fits better with the current coalescent diagram, but other matrix in generate_tree() needs to be long**
+  # **This is where we can implement different mating models, currently simplest version with equal probability of any parent**
+  
+  parent_matrix <- matrix(NA, nrow=(pop_size*ploidy), ncol=generations)
+  for (gen in ncol(parent_matrix):2) {
+    for (indiv in 1:nrow(parent_matrix)) {
+      parent_matrix[indiv, gen] <- sample(1:nrow(parent_matrix), 1)+(gen-2)*nrow(parent_matrix)
+    }
+  }
+  return(parent_matrix)
+}
+
+scatter_mutations <- function(parent_matrix, mutation_rate) {
+  
+  # Mutates individuals (changes allele number), following Infinite Sites and Infinite Alleles Assumptions
+  # All individuals start with the same conditions
+  #
+  # Inputs:
+  #   parent_matrix: matrix describing parentage of each individual
+  #   mutation_rate: float between 0 and 1 describing the probability of mutation during reproduction
+  #
+  # Returns data.frame with the mutation value for each individual in the matrix
+  
+  mutation_counter <- 1
+  rows <- nrow(parent_matrix)
+  cols <- ncol(parent_matrix)
+  poly_matrix <- matrix(0, nrow=rows, ncol=cols)
+  for (gen in 1:cols) {
+    for (i in 1:rows) {
+      if (gen != 1) {
+        if (runif(1) <= mutation_rate) {
+          poly_matrix[i, gen] <- mutation_counter
+          mutation_counter <- mutation_counter + 1
+        } else {
+          poly_matrix[i, gen] <- poly_matrix[parent_matrix[i, gen]]
+        }
+      }
+    }
+  }
+  poly_dataframe <- data.frame("indiv"=1:(cols*rows), "allele"=as.factor(poly_matrix[1:(cols*rows)]))
+  return(poly_dataframe)
+}
+
+find_lineage <- function(indiv, parent_matrix) {
+  
+  # Recursively determines the lineages of an individual based on the parent_matrix provided
+  #
+  # Inputs:
+  #   indiv: int for individual id
+  #   parent_matrix: matrix of parents
+  #
+  # Returns a vector containing the individual ids in the associated lineage
+  
+  if (is.na(parent_matrix[indiv])) {
+    return(indiv)
+  } else {
+    return(c(indiv, find_lineage(indiv=parent_matrix[indiv], parent_matrix=parent_matrix)))
+  }
+}
+
+flatten_lineage_list <- function(indiv, lineage_list) {
+  
+  # Converts list element for the lineage of an individual to a single data.frame that can be more easily handled
+  #
+  # Inputs:
+  #   indiv: int for individual id
+  #   lineage_list: list of all lineages, output from lapply of find_lineage()
+  #
+  # Returns a data.frame with two columns:
+  #   starting_indiv: individual id that the lineage is associated with
+  #   ancestor: ancestor's id
+  # Useful to group by starting_indiv for plotting and other analyses
+  
+  
+  lineage_dataframe <- data.frame(as.factor(indiv), lineage_list[indiv])
+  names(lineage_dataframe) <- c("starting_indiv", "ancestor")
+  return(lineage_dataframe)
+}
+
+locate_coalescent_events <- function(lineages, tracked, pop_size, ploidy, generations) {
+  
+  # Locates the coalescent events by identifying the most recent point of shared ancestry between tracked lineages
+  #
+  # Inputs:
+  #   lineages: data.frame of flattened lineages
+  #   tracked: vector of tracked lineages ids
+  #   pop_size: int for population size
+  #   ploidy: int for number of paired chromosomes
+  #   generations: int for total number of generations
+  #
+  # Returns a data.frame with one row per coalescent event and columns:
+  #   ancestor: ancestor's id
+  #   number_of_tracked_lineages: number of tracked lineages that shared this ancestor
+  #   tracked_lineages: ids of tracked lineages which share this ancestor, "_" delimited
+  #   generations_in_past: number of generations in past that coalescent event occurred, this assumes:
+  #     - all tracked lineages are from the most recent (rightmost) generation
+  #     - all tracked lineages are from the same generation (somewhat redundant to the first assumption, but also important)
+  #
+  # **May want to remove some of these parameters (pop_size, ploidy, generations) in the future, if there is an elegant way around them**
+  
+  shared_ancestry <- lineages %>%
+    filter(starting_indiv %in% tracked) %>%
+    group_by(ancestor) %>%
+    summarize(
+      number_of_tracked_lineages=n(),
+      tracked_lineages=paste(starting_indiv, collapse=" ")
+    ) %>%
+    filter(number_of_tracked_lineages > 1)
+  
+  if (nrow(shared_ancestry) > 0) {
+    return(
+      as.data.frame(
+        shared_ancestry %>%
+          arrange(number_of_tracked_lineages) %>%
+          mutate(generations_in_past = (generations-1) - ((ancestor-1) %/% (pop_size*ploidy))) %>%
+          group_by(tracked_lineages) %>%
+          filter(generations_in_past == min(generations_in_past))
+      )
+    )
+  } else {
+    return(
+      data.frame(
+        ancestor=character(),
+        number_of_tracked_lineages=numeric(),
+        tracked_lineages=character(),
+        generations_in_past=numeric()
+      )
+    )
+  }
+}
+
+identify_deepest_ancestor <- function(indiv, flat_lineages) {
+  
+  # Locates the oldest ancestor of a provided lineage
+  # Useful for knowing how many trees there are in the tracked lineages and which lineages belong to each tree
+  #
+  # Inputs:
+  #   indiv: int for individual id
+  #   flat_lineages: data.frame returned from flatten_lineage_list
+  #
+  # Returns ancestor's id
+  
+  return(min(flat_lineages[which(flat_lineages$starting_indiv==indiv),]$ancestor))
+}
+
+order_lineages <- function(coalesced_lineages, tracked) {
+  
+  # Calculates an order of lineages that reduces crossovers in tree diagram
+  #
+  # Inputs:
+  #   coalesced_lineages: vector of coalesced lineages from coalescent events data.frame
+  #   tracked: vector of all tracked lineages, even if they don't coalesce
+  #
+  # Returns a vector of the ordered lineages
+  
+  if (length(coalesced_lineages) > 0) {
+    lineages_order <- as.numeric(unlist(strsplit(coalesced_lineages[1], " ")))
+    if (length(coalesced_lineages) > 1) {
+      for (event in 2:length(coalesced_lineages)) {
+        inserting <- as.numeric(unlist(strsplit(coalesced_lineages[event], " ")))
+        reordered_inserting <- inserting[order(match(inserting, lineages_order))]
+        if (!all(is.na(match(inserting, lineages_order)))) {
+          lineages_order <- unique(c(lineages_order[1:min(match(reordered_inserting, lineages_order), na.rm=TRUE)], reordered_inserting, lineages_order[min(match(reordered_inserting, lineages_order), na.rm=TRUE):length(lineages_order)])) 
+        } else {
+          lineages_order <- c(lineages_order, reordered_inserting)
+        }
+      }
+    }
+    lineages_order <- unique(c(lineages_order, tracked)) 
+  } else {
+    lineages_order <- tracked
+  }
+  return(lineages_order)
+}
+
+generate_tree <- function(coalescent_events, tracked, generations) {
+  
+  # Calculates values for a coalescent tree based on previously located coalescent events
+  # These values are completely relative and are not based on any biologically relevant scale
+  #
+  # Inputs:
+  #   coalescent_events: data.frame containing data on the coalescent events
+  #   tracked: vector of all tracked lineages, even if they don't coalesce
+  #   generations: int for total number of generations
+  #
+  # Returns a data.frame that can be plotted to show the coalescent tree
+  
+  if (length(tracked) > 0) {
+    lineages_order <- order_lineages(coalesced_lineages=coalescent_events$tracked_lineages, tracked=tracked)
+    coalescent_tree_matrix <- matrix(c(1:length(lineages_order)), nrow=generations, ncol=length(lineages_order), byrow=TRUE)
+    colnames(coalescent_tree_matrix) <- lineages_order
+    if (nrow(coalescent_events) > 0) {
+      for (event in 1:nrow(coalescent_events)) {
+        coalescent_tree_matrix[1:(generations-coalescent_events$generations_in_past[event]),c(unlist(strsplit(coalescent_events$tracked_lineages[event], " ")))] <- mean(coalescent_tree_matrix[(generations-coalescent_events$generations_in_past[event]),c(unlist(strsplit(coalescent_events$tracked_lineages[event], " ")))])
+      } 
+    }
+    coalescent_tree_dataframe <- data.frame("generation"=1:generations, as.data.frame(coalescent_tree_matrix)) %>%
+      gather(lineage, value, -c(generation))
+    coalescent_tree_dataframe$lineage <- as.numeric(gsub("X", "", coalescent_tree_dataframe$lineage))
+    return(coalescent_tree_dataframe) 
+  } else {
+    return(data.frame("generation"=numeric(), "lineage"=numeric(), "value"=numeric()))
+  }
+}
+
+locate_mutation_events <- function(allele, polymorphisms) {
+  
+  # Identifies the earliest instance of each mutation
+  #
+  # Inputs:
+  #   allele: int for the allele of interest
+  #   polymorphisms: data.frame containing polymorphism data for each individual
+  #
+  # Returns the individual id for the earliest individual with the allele of interest
+  
+  indiv <- min(polymorphisms[which(polymorphisms$allele==allele),]$indiv)
+  return(indiv)
+}
+
+identify_allele_seq <- function(event, tracked, tree) {
+  
+  # Determines which allele of a mutated SNP each individual has based on location of mutation on tree
+  # Unknown alleles, marked with "?", occur when an individual does not coalesce with the tree containing the mutation
+  #
+  # Inputs:
+  #   event: mutation event from tracked_mutation_events row
+  #   tracked: vector of all tracked lineages, even if they don't coalesce
+  #   tree: data.frame with individuals and their associated tree
+  #
+  # Returns vector with each individual's genotype for the mutation event of interest
+  
+  allele <- rep("?", length(tracked))
+  names(allele) <- tracked
+  lineages_on_mutated_tree <- tree[which(tree$tree==event["tree"]),]$lineage
+  allele[which(tracked %in% lineages_on_mutated_tree)] <- event["ancestral_allele"]
+  allele[which(tracked %in% as.numeric(unlist(strsplit(event["lineages"], split=" "))))] <- event["derived_allele"]
+  return(allele)
+}
+
+select_alternate_ancestor <- function(indiv, orig_matrix) {
+  if (!is.na(orig_matrix[indiv])) {
+    if (sample(0:1, 1) == 1) {
+      if ((orig_matrix[indiv]+1) %% 2 == 0) {
+        return(orig_matrix[indiv]+1)
+      } else {
+        return(orig_matrix[indiv]-1)
+      }   
+    } else {
+      return(orig_matrix[indiv])
+    }
+  } else {
+    return(NA)
+  }
+}
+
+show_pedigree_vs_tree <- function(plot_pedigree=FALSE) {
+  flat_lineages_alt <- reactive({
+    alt_matrix <- matrix(sapply(1:length(values$parent_matrix), select_alternate_ancestor, orig_matrix=values$parent_matrix), nrow=(pop_size_app1*ploidy_app1), ncol=generations_app1)
+    full_lineages_alt <- lapply(1:(pop_size_app1*ploidy_app1*generations_app1), find_lineage, parent_matrix=alt_matrix)
+    flat_lineages_alt <- do.call(rbind, lapply(1:length(full_lineages_alt), flatten_lineage_list, lineage_list=full_lineages_alt))
+    flat_lineages_alt$pedigree <- (flat_lineages_alt$ancestor+(ploidy_app1-1)) %/% ploidy_app1
+    flat_lineages_alt
+  })
+  
+  
+  coalescent_tree_alt <- reactive({
+    coalescent_events_alt <- locate_coalescent_events(lineages=flat_lineages_alt(), tracked=tracked_app1, pop_size=pop_size_app1, ploidy=ploidy_app1, generations=generations_app1)
+    generate_tree(coalescent_events=coalescent_events_alt, tracked=tracked_app1, generations=generations_app1)
+  })
+  
+  labels_alt <- reactive({
+    coalescent_tree_alt()[which(coalescent_tree_alt()$generation==generations_app1),]
+  })
+  
+  if (plot_pedigree==TRUE) {
+    output$pedigree <- renderPlot({
+    ggplot() +
+      theme_void() +
+      theme(legend.position="none") +
+      coord_fixed() +
+      geom_line(
+        data=flat_lineages_alt(),
+        aes(
+          (pedigree-1) %/% (pop_size_app1),
+          (pop_size_app1) - ((pedigree-1) %% (pop_size_app1)),
+          group=starting_indiv
+        ),
+        size=1
+      ) +
+      geom_circle(
+        data=data.frame("point"=1:(pop_size_app1*generations_app1)),
+        aes(
+          x0=(point-1) %/% (pop_size_app1),
+          y0=(pop_size_app1) - ((point-1) %% (pop_size_app1)),
+          r=0.25
+        ),
+        size=1,
+        color="black",
+        fill="white"
+      )
+  }) 
+  }
+  
+  output$coalescent <- renderPlot({
+    ggplot() +
+    theme_void() +
+    theme(legend.position="none") +
+    coord_fixed() +
+    geom_circle(
+      data=data.frame("point"=1:(pop_size_app1*generations_app1)),
+      aes(
+        x0=(point-1) %/% (pop_size_app1),
+        y0=(pop_size_app1) - ((point-1) %% (pop_size_app1)),
+        r=0.25
+      ),
+      size=1,
+      color="black",
+      fill="white"
+    ) +
+    geom_point(
+      data=data.frame("point"=1:(pop_size_app1*ploidy_app1*generations_app1)),
+      aes(
+        (point-1) %/% (pop_size_app1*ploidy_app1),
+        (pop_size_app1) - (((point-1) %/% ploidy_app1) %% (pop_size_app1)) - ((point-1) %% ploidy_app1 - (ploidy_app1-1)/2)/5
+      ),
+      size=2,
+      color="grey"
+    ) +
+    geom_text(
+      data=data.frame("point"=((pop_size_app1*ploidy_app1*generations_app1-pop_size_app1*ploidy_app1)+1):(pop_size_app1*ploidy_app1*generations_app1)),
+      aes(
+        (point-1) %/% (pop_size_app1*ploidy_app1) + generations_app1/20,
+        (pop_size_app1) - (((point-1) %/% ploidy_app1) %% (pop_size_app1)) - ((point-1) %% ploidy_app1 - (ploidy_app1-1)/2)/5,
+        label=point-(pop_size_app1*ploidy_app1*generations_app1-pop_size_app1*ploidy_app1)
+      )
+    ) +
+    geom_line(
+      data=flat_lineages_alt(),
+      aes(
+        (ancestor-1) %/% (pop_size_app1*ploidy_app1),
+        (pop_size_app1) - (((ancestor-1) %/% ploidy_app1) %% (pop_size_app1)) - ((ancestor-1) %% ploidy_app1 - (ploidy_app1-1)/2)/5,
+        group=starting_indiv
+      ),
+      size=1,
+      color="grey"
+    ) +
+    geom_line(
+      data=flat_lineages_alt()[which(flat_lineages_alt()$starting_indiv %in% tracked_app1),],
+      aes(
+        (ancestor-1) %/% (pop_size_app1*ploidy_app1),
+        (pop_size_app1) - (((ancestor-1) %/% ploidy_app1) %% (pop_size_app1)) - ((ancestor-1) %% ploidy_app1 - (ploidy_app1-1)/2)/5,
+        group=starting_indiv
+      ),
+      size=1,
+      color="#4285f4ff"
+    )
+  })
+  
+  output$tree <- renderPlot({
+    ggplot() +
+      theme_void() +
+      theme(legend.position="none") +
+      coord_fixed() +
+      geom_line(data=coalescent_tree_alt(), aes(generation, value, group=lineage), size=1) +
+      geom_text(data=labels_alt(), aes(generation+generations_app1/20, value, label=lineage-(pop_size_app1*ploidy_app1*generations_app1-pop_size_app1*ploidy_app1)))
+  })
+}
+```
+
+## Haploid Model
+
+The Wright-Fisher model describes how a haploid population changes over time. There are discrete generations, meaning that every individual in the population dies and is replaced by offspring which form the next generation. Reproduction consists of randomly selecting an individual as parent, and all offspring are direct clones of this individual. Population size is finite and held constant throughout the simulation.
+
+
+```{r fig.align='center', fig.cap="Figure 1. A haploid population of three individuals tracked over five generations. Time is shown on the x-axis, with the past through present shown from left to right. Lines connecting individuals are drawn to represent parentage."}
+set.seed(1)
+
+pop_size <- 3
+ploidy <- 1
+generations <- 5
+
+parent_matrix <- generate_parent_matrix(pop_size=pop_size, ploidy=ploidy, generations=generations)
+full_lineages <- lapply(1:(pop_size*ploidy*generations), find_lineage, parent_matrix=parent_matrix)
+flat_lineages <- do.call(rbind, lapply(1:length(full_lineages), flatten_lineage_list, lineage_list=full_lineages))
+flat_lineages$pedigree <- (flat_lineages$ancestor+(ploidy-1)) %/% ploidy
+
+ggplot() +
+  theme_void() +
+  theme(legend.position="none") +
+  coord_fixed() +
+  geom_circle(
+    data=data.frame("point"=1:(pop_size*generations)),
+    aes(
+      x0=(point-1) %/% (pop_size),
+      y0=(pop_size) - ((point-1) %% (pop_size)),
+      r=0.25
+    ),
+    size=1,
+    color="black",
+    fill="white"
+  ) +
+  geom_point(
+    data=data.frame("point"=1:(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy),
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5
+    ),
+    size=2
+  ) +
+  geom_text(
+    data=data.frame("point"=((pop_size*ploidy*generations-pop_size*ploidy)+1):(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy) + 0.5,
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5,
+      label=point-(pop_size*ploidy*generations-pop_size*ploidy)
+    )
+  ) +
+  geom_line(
+    data=flat_lineages,
+    aes(
+      (ancestor-1) %/% (pop_size*ploidy),
+      (pop_size) - (((ancestor-1) %/% ploidy) %% (pop_size)) - ((ancestor-1) %% ploidy - (ploidy-1)/2)/5,
+      group=starting_indiv
+    ),
+    size=1
+  )
+```
+
+
+
+Due to the randomness of parent selection, it is common that not all of the individuals in the left generation produce offspring in the right generation. Because of this, overtime, certain lineages are lost and others may grow in frequency; this process is known as genetic drift and is most apparent in small populations.
+
+A coalescent event is when two individuals share a common ancestor. Coalescent theory hinges on the fact that every individual in the modern population shares a common ancestor at some generation in the past; therefore, you can build a genealogical tree that describes the relatedness of everyone in the population. I’ve highlighted the direct lineages of each individual in the modern (rightmost) population in orange and plotted the tree below. The bifurcations of the tree correspond with the coalescent events from the simulation.
+
+
+```{r fig.align="center", fig.cap="Figure 2. Direct lineages found in the modern generation are highlighted in blue; the grey lines represent lineages which have been lost in the modern generation."}
+tracked <- c(sample(((pop_size*ploidy*generations-pop_size*ploidy)+1):(pop_size*ploidy*generations), pop_size*ploidy))
+
+ggplot() +
+  theme_void() +
+  theme(legend.position="none") +
+  coord_fixed() +
+  geom_circle(
+    data=data.frame("point"=1:(pop_size*generations)),
+    aes(
+      x0=(point-1) %/% (pop_size),
+      y0=(pop_size) - ((point-1) %% (pop_size)),
+      r=0.25
+    ),
+    size=1,
+    color="black",
+    fill="white"
+  ) +
+  geom_point(
+    data=data.frame("point"=1:(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy),
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5
+    ),
+    size=2,
+    color="grey"
+  ) +
+  geom_text(
+    data=data.frame("point"=((pop_size*ploidy*generations-pop_size*ploidy)+1):(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy) + 0.5,
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5,
+      label=point-(pop_size*ploidy*generations-pop_size*ploidy)
+    )
+  ) +
+  geom_line(
+    data=flat_lineages,
+    aes(
+      (ancestor-1) %/% (pop_size*ploidy),
+      (pop_size) - (((ancestor-1) %/% ploidy) %% (pop_size)) - ((ancestor-1) %% ploidy - (ploidy-1)/2)/5,
+      group=starting_indiv
+    ),
+    size=1,
+    color="grey"
+  ) +
+  geom_line(
+    data=flat_lineages[which(flat_lineages$starting_indiv %in% tracked),],
+    aes(
+      (ancestor-1) %/% (pop_size*ploidy),
+      (pop_size) - (((ancestor-1) %/% ploidy) %% (pop_size)) - ((ancestor-1) %% ploidy - (ploidy-1)/2)/5,
+      group=starting_indiv
+    ),
+    size=1,
+    color="#4285f4ff"
+  )
+```
+
+```{r fig.align="center", fig.cap="Figure 3. Genealogical tree of the three modern lineages. Lineages 1 and 3 share a common ancestor one generation in the past. Lineage 2 is a more distant relative. All three coalesce within the time of the simulation."}
+coalescent_events <- locate_coalescent_events(lineages=flat_lineages, tracked=tracked, pop_size=pop_size, ploidy=ploidy, generations=generations)
+coalescent_tree <- generate_tree(coalescent_events=coalescent_events, tracked=tracked, generations=generations)
+labels <- coalescent_tree[which(coalescent_tree$generation==generations),]
+
+ggplot() +
+  theme_void() +
+  theme(legend.position="none") +
+  coord_fixed() +
+  geom_line(data=coalescent_tree, aes(generation, value, group=lineage), size=1) +
+  geom_text(data=labels, aes(generation+0.5, value, label=lineage-(pop_size*ploidy*generations-pop_size*ploidy)))
+```
+
+
+## Diploid Model
+
+This model is also useful in describing sexually reproducing diploid populations, where individuals have two copies of every locus in their genome. In a population of three individuals, there are six total copies per generation. This is then an identical scenario to the original haploid model for a population of six individuals. Below is a simulation of a diploid population of three individuals tracked over five generations. I’ve grouped the copies within a circle which represents the individual associated with these copies.
+
+
+```{r fig.align="center", fig.cap="Figure 4. A diploid population of three individuals tracked over five generations. Each individual carries two copies each locus in the genome, represented by the two dots in each circle. Occurences of self-fertilization can be seen when both copies come from the same individual in the previous generation, seen in the individual from Row 1, Column 2."}
+set.seed(1)
+
+pop_size <- 3
+ploidy <- 2
+generations <- 5
+tracked <- c(sample(((pop_size*ploidy*generations-pop_size*ploidy)+1):(pop_size*ploidy*generations), pop_size*ploidy))
+
+parent_matrix <- generate_parent_matrix(pop_size=pop_size, ploidy=ploidy, generations=generations)
+full_lineages <- lapply(1:(pop_size*ploidy*generations), find_lineage, parent_matrix=parent_matrix)
+flat_lineages <- do.call(rbind, lapply(1:length(full_lineages), flatten_lineage_list, lineage_list=full_lineages))
+flat_lineages$pedigree <- (flat_lineages$ancestor+(ploidy-1)) %/% ploidy
+coalescent_events <- locate_coalescent_events(lineages=flat_lineages, tracked=tracked, pop_size=pop_size, ploidy=ploidy, generations=generations)
+coalescent_tree <- generate_tree(coalescent_events=coalescent_events, tracked=tracked, generations=generations)
+labels <- coalescent_tree[which(coalescent_tree$generation==generations),]
+
+ggplot() +
+  theme_void() +
+  theme(legend.position="none") +
+  coord_fixed() +
+  geom_circle(
+    data=data.frame("point"=1:(pop_size*generations)),
+    aes(
+      x0=(point-1) %/% (pop_size),
+      y0=(pop_size) - ((point-1) %% (pop_size)),
+      r=0.25
+    ),
+    size=1,
+    color="black",
+    fill="white"
+  ) +
+  geom_point(
+    data=data.frame("point"=1:(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy),
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5
+    ),
+    size=2
+  ) +
+  geom_text(
+    data=data.frame("point"=((pop_size*ploidy*generations-pop_size*ploidy)+1):(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy) + 0.5,
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5,
+      label=point-(pop_size*ploidy*generations-pop_size*ploidy)
+    )
+  ) +
+  geom_line(
+    data=flat_lineages,
+    aes(
+      (ancestor-1) %/% (pop_size*ploidy),
+      (pop_size) - (((ancestor-1) %/% ploidy) %% (pop_size)) - ((ancestor-1) %% ploidy - (ploidy-1)/2)/5,
+      group=starting_indiv
+    ),
+    size=1
+  )
+```
+
+
+With knowledge of how the copies have been passed down from the left generation to the right, you can generate a pedigree for each individual; this describes the relationships at the level of individuals rather than at the level of copies. Each individual has two parents from the previous generation, except in the scenario of self-fertilization when a single individual parents both copies of the offspring’s DNA. Pedigrees have been historically very useful as they can help to predict genetic relatedness without having to directly observe which lineages were passed down from parent to offspring.
+
+
+```{r fig.align="center", fig.cap="Figure 5. Pedigree of the diploid population showing parentage in a (generally) sexually reproducing species. This diagram does not contain as much information regarding the genetic relatedness of individuals as the coalescent simulations because it does not tracking the inheritance of specific lineages from each individual."}
+ggplot() +
+  theme_void() +
+  theme(legend.position="none") +
+  coord_fixed() +
+  geom_line(
+    data=flat_lineages,
+    aes(
+      (pedigree-1) %/% (pop_size),
+      (pop_size) - ((pedigree-1) %% (pop_size)),
+      group=starting_indiv
+    ),
+    size=1
+  ) +
+  geom_circle(
+    data=data.frame("point"=1:(pop_size*generations)),
+    aes(
+      x0=(point-1) %/% (pop_size),
+      y0=(pop_size) - ((point-1) %% (pop_size)),
+      r=0.25
+    ),
+    size=1,
+    color="black",
+    fill="white"
+  ) +
+  geom_text(
+    data=data.frame("point"=((pop_size*ploidy*generations-pop_size*ploidy)+1):(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy) + 0.5,
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5,
+      label=point
+    ),
+    color="white"
+  )
+```
+
+
+Many variations in the coalescent simulation share a common pedigree; in other words, full siblings (individuals who share both parents) may have inherited different copies from each parent. In humans, full siblings are expected to share 50% of their DNA; there is a 25% chance that they share both copies, 50% chance that they share one copy, and 25% chance that they do not share any copies. Here is an interactive tool that allows you to see different combinations of simulations based on a shared pedigree. Importantly, even though the pedigree is the same, the genealogical trees from the simulations can differ greatly due to the randomness of inheritance.
+
+```{r echo=FALSE}
+pop_size_app1 <- 5
+ploidy_app1 <- 2
+generations_app1 <- 10
+tracked_app1 <- c(sample(((pop_size_app1*ploidy_app1*generations_app1-pop_size_app1*ploidy_app1)+1):(pop_size_app1*ploidy_app1*generations_app1), pop_size_app1*ploidy_app1))
+values <- reactiveValues(
+  parent_matrix=generate_parent_matrix(pop_size=pop_size_app1, ploidy=ploidy_app1, generations=generations_app1)
+)
+```
+
+<br>
+
+```{r echo=FALSE, fig.align='center'}
+wellPanel(style="background-color: white; border: 3px solid #000000;", align='center',
+  actionButton("rerun_pedigree", "Rerun Simulation"),
+  actionButton("rerun_coalescent", "Another Tree From Pedigree"),
+  hr(style = "border-top: 1px solid #000000;"),
+  plotOutput("pedigree", height="30vw"),
+  fluidRow(style="width: 100%; margin-left: -25px; padding: 20px 5px 0px 5px;",
+    splitLayout(cellWidths=c("75%", "1%", "24%"), plotOutput("coalescent", height="30vw"), br(),plotOutput("tree", height="30vw"))
+  )
+)
+
+show_pedigree_vs_tree(plot_pedigree=TRUE)
+
+observeEvent(input$rerun_pedigree, {
+  values$parent_matrix <- generate_parent_matrix(pop_size=pop_size_app1, ploidy=ploidy_app1, generations=generations_app1)
+  show_pedigree_vs_tree(plot_pedigree=TRUE)
+})
+
+observeEvent(input$rerun_coalescent, {
+  show_pedigree_vs_tree()
+})
+```
+
+<br>
+
+There are instances when the lineages of the highlighted copies do not coalesce within the time period of the simulation. This is especially common when the population size is large or the simulation time period is short (too few generations).
+
+
+## Mutation
+
+Previously in our simulations, offspring inherited a clone of their parent's locus ("copy") during reproduction. As we know that there can be errors in DNA replication leading to the development of new alleles at a given locus, we can include these mutations in our simulations under three assumptions:
+
+* Mutations are neutral, meaning that they do not affect the relative reproductive success of individuals in the population.
+* There are an infinite number of sites where a mutation can occur so it is impossible for two mutations to affect the same locus (infinite sites model)
+* Each mutation creates a novel allele (infinite alleles model)
+
+```{r fig.align="center", fig.cap="Figure 6. A haploid population of three individuals tracked over five generations. All individuals in the most ancient generation have the red allele. During reproduction, there is a 10% chance of a mutation rate occuring, resulting in a change of color. Three mutation events occurred during this coalescent simulation. By the end of the simulation, the red allele has been completely lost, replaced by purple and blue."}
+set.seed(122)
+
+pop_size <- 3
+ploidy <- 1
+generations <- 5
+tracked <- c(sample(((pop_size*ploidy*generations-pop_size*ploidy)+1):(pop_size*ploidy*generations), pop_size*ploidy))
+
+parent_matrix <- generate_parent_matrix(pop_size=pop_size, ploidy=ploidy, generations=generations)
+full_lineages <- lapply(1:(pop_size*ploidy*generations), find_lineage, parent_matrix=parent_matrix)
+flat_lineages <- do.call(rbind, lapply(1:length(full_lineages), flatten_lineage_list, lineage_list=full_lineages))
+flat_lineages$pedigree <- (flat_lineages$ancestor+(ploidy-1)) %/% ploidy
+coalescent_events <- locate_coalescent_events(lineages=flat_lineages, tracked=tracked, pop_size=pop_size, ploidy=ploidy, generations=generations)
+coalescent_tree <- generate_tree(coalescent_events=coalescent_events, tracked=tracked, generations=generations)
+labels <- coalescent_tree[which(coalescent_tree$generation==generations),]
+
+mutation_rate <- 0.10
+polymorphisms <- scatter_mutations(parent_matrix=parent_matrix, mutation_rate=mutation_rate)
+
+ggplot() +
+  theme_void() +
+  theme(legend.position="none") +
+  coord_fixed() +
+  geom_circle(
+    data=data.frame("point"=1:(pop_size*generations)),
+    aes(
+      x0=(point-1) %/% (pop_size),
+      y0=(pop_size) - ((point-1) %% (pop_size)),
+      r=0.25
+    ),
+    size=1,
+    color="black",
+    fill="white"
+  ) +
+  geom_point(
+    data=data.frame("point"=1:(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy),
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5
+    ),
+    size=2
+  ) +
+  geom_text(
+    data=data.frame("point"=((pop_size*ploidy*generations-pop_size*ploidy)+1):(pop_size*ploidy*generations)),
+    aes(
+      (point-1) %/% (pop_size*ploidy) + 0.5,
+      (pop_size) - (((point-1) %/% ploidy) %% (pop_size)) - ((point-1) %% ploidy - (ploidy-1)/2)/5,
+      label=point-(pop_size*ploidy*generations-pop_size*ploidy)
+    )
+  ) +
+  geom_line(
+    data=flat_lineages,
+    aes(
+      (ancestor-1) %/% (pop_size*ploidy),
+      (pop_size) - (((ancestor-1) %/% ploidy) %% (pop_size)) - ((ancestor-1) %% ploidy - (ploidy-1)/2)/5,
+      group=starting_indiv
+    ),
+    size=1,
+    color="grey"
+  ) +
+  geom_point(
+    data=polymorphisms,
+    aes(
+      (indiv-1) %/% (pop_size*ploidy),
+      (pop_size) - (((indiv-1) %/% ploidy) %% (pop_size)) - ((indiv-1) %% ploidy - (ploidy-1)/2)/5,
+      size=2,
+      color=allele
+    )
+  )
+```
+
+```{r fig.align="center", fig.cap="Figure 7."}
+associated_tree <- data.frame("lineage"=tracked, "tree"=sapply(tracked, FUN=identify_deepest_ancestor, flat_lineages=flat_lineages))
+if (max(as.numeric(polymorphisms$allele))-1 > 0) {
+  mutation_events <- data.frame("mutation"=1:(max(as.numeric(polymorphisms$allele))-1), "indiv"=sapply(1:(max(as.numeric(polymorphisms$allele))-1), FUN=locate_mutation_events, polymorphisms=polymorphisms))
+  tracked_mutations <- merge(mutation_events, flat_lineages[which(flat_lineages$starting_indiv %in% tracked),], by.x="indiv", by.y="ancestor")
+  if (nrow(tracked_mutations) > 0) {
+    tracked_mutations$generation <- ((tracked_mutations$indiv-1) %/% (pop_size*ploidy)) + 1
+    tracked_mutations <- merge(coalescent_tree, tracked_mutations, by.x=c("lineage", "generation"), by.y=c("starting_indiv", "generation"))
+    tracked_mutations <- merge(tracked_mutations, associated_tree, by="lineage")
+    tracked_mutation_events <- tracked_mutations %>%
+      group_by(mutation, generation, value, tree) %>%
+      summarize(
+        lineages = paste(lineage, collapse=" "),
+        alleles = paste(sample(c("A", "T", "C", "G"), 2), collapse="/"),
+        .groups = 'drop'
+      ) %>%
+      separate(alleles, c("ancestral_allele", "derived_allele")) %>%
+      arrange(value)
+    tracked_mutation_events$mutation_order <- 1:nrow(tracked_mutation_events)
+  } else {
+    tracked_mutation_events <- data.frame("mutation"=factor(), "generation"=numeric(), "value"=numeric(), "tree"=factor(), "lineages"=character(), "ancestral_allele"=character(), "derived_allele"=character(), "mutation_order"=numeric())
+  }
+} else {
+  tracked_mutation_events <- data.frame("mutation"=factor(), "generation"=numeric(), "value"=numeric(), "tree"=factor(), "lineages"=character(), "ancestral_allele"=character(), "derived_allele"=character(), "mutation_order"=numeric())
+}
+if (nrow(tracked_mutation_events) > 0) {
+  alleles <- as.data.frame(apply(tracked_mutation_events, FUN=identify_allele_seq, MARGIN=1, tracked=tracked, tree=associated_tree))
+  allele_seq <- data.frame("lineage"=rownames(alleles), unite(alleles, "allele_seq", sep=""))
+  allele_seq <- merge(allele_seq, coalescent_tree[which(coalescent_tree$generation == generations),], by="lineage")   
+} else {
+  allele_seq <- data.frame("lineage"=factor(), "allele_seq"=character(), "generation"=numeric(), "value"=numeric())
+}
+
+tree <- ggplot() +
+  theme_void() +
+  theme(legend.position="none") +
+  geom_line(data=coalescent_tree, aes(generation, value, group=lineage), size=1)
+
+if (max(as.numeric(polymorphisms$allele))-1 > 0 & nrow(tracked_mutation_events > 0)) {
+  tree +
+    geom_label(data=tracked_mutation_events, aes(generation, value, label=paste(paste(mutation_order, ".", sep=""), paste(ancestral_allele, ">", derived_allele, sep="")))) +
+    geom_text(data=allele_seq, aes(generation+0.5, value, label=paste0(as.numeric(lineage)-(pop_size*ploidy*generations-pop_size*ploidy), ":", allele_seq)))
+} else {
+  tree
+}
+```
+
+## Tying It All Together
+
+
+```{r}
+wellPanel(style="background-color: white; border: 3px solid #000000; height: auto;", align='center',
+  fluidRow(
+    column(6, sliderInput(inputId="generations", label="Generations", min=10, max=50, value=10)),
+    column(6, sliderInput(inputId="pop_size", label="Population Size", min=5, max=10, value=5))
+  ),
+  fluidRow(
+    column(2, sliderInput(inputId="ploidy", label="Ploidy", min=1, max=2, value=1, step=1)),
+    column(5, sliderInput(inputId="mutation_rate", label="Mutation Rate", min=0, max=0.25, value=0.05, step=0.05)),
+    column(5, sliderInput(inputId="tracked_lineages", label="Tracked Lineages", min=1, max=5, value=5)),
+  ),
+  fluidRow(
+    column(6, h3("Colors"), fluidRow(
+      column(6, checkboxInput("lineage_color", "lineages", value = FALSE)),
+      column(6, checkboxInput("polymorphism_color", "mutations", value = FALSE)),
+    )),
+    column(6, h3(), actionButton("rerun_coalescent_simulation", "Rerun With Same Parameters"))
+  ),
+  hr(style = "border-top: 1px solid #000000;"),
+  plotOutput("coalescent_app2", height="30vw"),
+  fluidRow(style="padding-top: 20px;", plotOutput("tree_app2", height="30vw"))
+)
+
+run_coalescent_simulation <- function() {
+  parent_matrix <- reactive({
+    generate_parent_matrix(pop_size=input$pop_size, ploidy=input$ploidy, generations=input$generations)
+  })
+  
+  tracked <- reactive({
+    c(sample(((input$pop_size*input$ploidy*input$generations-input$pop_size*input$ploidy)+1):(input$pop_size*input$ploidy*input$generations), input$tracked_lineages)) # random lineages in modern generation to be tracked
+  })
+  
+  polymorphisms <- reactive({
+    scatter_mutations(parent_matrix=parent_matrix(), mutation_rate=input$mutation_rate)
+  })
+  
+  flat_lineages <- reactive({
+    full_lineages <- lapply(1:(input$pop_size*input$ploidy*input$generations), find_lineage, parent_matrix=parent_matrix())
+    do.call(rbind, lapply(1:length(full_lineages), flatten_lineage_list, lineage_list=full_lineages))
+  })
+  
+  
+  output$coalescent_app2 <- renderPlot({
+    
+    coalescent <- ggplot() +
+      theme_void() +
+      theme(legend.position="none") +
+      coord_fixed() +
+      geom_circle(
+        data=data.frame("point"=1:(input$pop_size*input$generations)),
+        aes(
+          x0=(point-1) %/% (input$pop_size),
+          y0=(input$pop_size) - ((point-1) %% (input$pop_size)),
+          r=0.25
+        ),
+        size=1,
+        color="black",
+        fill="white"
+      ) +
+      geom_point(
+        data=data.frame("point"=1:(input$pop_size*input$ploidy*input$generations)),
+        aes(
+          (point-1) %/% (input$pop_size*input$ploidy),
+          (input$pop_size) - (((point-1) %/% input$ploidy) %% (input$pop_size)) - ((point-1) %% input$ploidy - (input$ploidy-1)/2)/5
+        ),
+        size=1,
+        color="grey"
+      ) +
+      geom_text(
+        data=data.frame("point"=((input$pop_size*input$ploidy*input$generations-input$pop_size*input$ploidy)+1):(input$pop_size*input$ploidy*input$generations)),
+        aes(
+          (point-1) %/% (input$pop_size*input$ploidy) + 0.5,
+          (input$pop_size) - (((point-1) %/% input$ploidy) %% (input$pop_size)) - ((point-1) %% input$ploidy - (input$ploidy-1)/2)/5,
+          label=point-(input$pop_size*input$ploidy*input$generations-input$pop_size*input$ploidy)
+        )
+      ) +
+      geom_line(
+        data=flat_lineages(),
+        aes(
+          (ancestor-1) %/% (input$pop_size*input$ploidy),
+          (input$pop_size) - (((ancestor-1) %/% input$ploidy) %% (input$pop_size)) - ((ancestor-1) %% input$ploidy - (input$ploidy-1)/2)/5,
+          group=starting_indiv
+        ),
+        size=1,
+        color="grey"
+      )
+    
+    if (input$lineage_color) {
+      coalescent  <- coalescent +
+        geom_line(
+          data=flat_lineages()[which(flat_lineages()$starting_indiv %in% tracked()),],
+          aes(
+            (ancestor-1) %/% (input$pop_size*input$ploidy),
+            (input$pop_size) - (((ancestor-1) %/% input$ploidy) %% (input$pop_size)) - ((ancestor-1) %% input$ploidy - (input$ploidy-1)/2)/5,
+            group=starting_indiv,
+            color=starting_indiv
+          ),
+          size=1
+        )
+    } else {
+      coalescent  <- coalescent +
+        geom_line(
+          data=flat_lineages()[which(flat_lineages()$starting_indiv %in% tracked()),],
+          aes(
+            (ancestor-1) %/% (input$pop_size*input$ploidy),
+            (input$pop_size) - (((ancestor-1) %/% input$ploidy) %% (input$pop_size)) - ((ancestor-1) %% input$ploidy - (input$ploidy-1)/2)/5,
+            group=starting_indiv
+          ),
+          size=1,
+          color="#4285f4ff"
+        )
+    }
+    
+    if (input$polymorphism_color) {
+      coalescent +
+        geom_point(
+          data=polymorphisms(),
+          aes(
+            (indiv-1) %/% (input$pop_size*input$ploidy),
+            (input$pop_size) - (((indiv-1) %/% input$ploidy) %% (input$pop_size)) - ((indiv-1) %% input$ploidy - (input$ploidy-1)/2)/5,
+            size=2,
+            color=allele
+          )
+        )
+    } else {
+      coalescent
+    }
+  })
+    
+  coalescent_tree <- reactive({
+    coalescent_events <- locate_coalescent_events(lineages=flat_lineages(), tracked=tracked(), pop_size=input$pop_size, ploidy=input$ploidy, generations=input$generations)
+    generate_tree(coalescent_events=coalescent_events, tracked=tracked(), generations=input$generations)
+  })
+  
+  associated_tree <- reactive({
+    data.frame("lineage"=tracked(), "tree"=sapply(tracked(), FUN=identify_deepest_ancestor, flat_lineages=flat_lineages()))
+  })
+  
+  tracked_mutation_events <- reactive({
+    if (max(as.numeric(polymorphisms()$allele))-1 > 0) {
+      mutation_events <- data.frame("mutation"=1:(max(as.numeric(polymorphisms()$allele))-1), "indiv"=sapply(1:(max(as.numeric(polymorphisms()$allele))-1), FUN=locate_mutation_events, polymorphisms=polymorphisms()))
+      tracked_mutations <- merge(mutation_events, flat_lineages()[which(flat_lineages()$starting_indiv %in% tracked()),], by.x="indiv", by.y="ancestor")
+      if (nrow(tracked_mutations) > 0) {
+        tracked_mutations$generation <- ((tracked_mutations$indiv-1) %/% (input$pop_size*input$ploidy)) + 1
+        tracked_mutations <- merge(coalescent_tree(), tracked_mutations, by.x=c("lineage", "generation"), by.y=c("starting_indiv", "generation"))
+        tracked_mutations <- merge(tracked_mutations, associated_tree(), by="lineage")
+        tracked_mutation_events <- tracked_mutations %>%
+          group_by(mutation, generation, value, tree) %>%
+          summarize(
+            lineages = paste(lineage, collapse=" "),
+            alleles = paste(sample(c("A", "T", "C", "G"), 2), collapse="/"),
+            .groups = 'drop'
+          ) %>%
+          separate(alleles, c("ancestral_allele", "derived_allele")) %>%
+          arrange(value)
+        tracked_mutation_events$mutation_order <- 1:nrow(tracked_mutation_events)
+        tracked_mutation_events
+      } else {
+        data.frame("mutation"=factor(), "generation"=numeric(), "value"=numeric(), "tree"=factor(), "lineages"=character(), "ancestral_allele"=character(), "derived_allele"=character(), "mutation_order"=numeric())
+      }
+    } else {
+      data.frame("mutation"=factor(), "generation"=numeric(), "value"=numeric(), "tree"=factor(), "lineages"=character(), "ancestral_allele"=character(), "derived_allele"=character(), "mutation_order"=numeric())
+    }
+  })
+  
+  allele_seq <- reactive({
+    if (nrow(tracked_mutation_events()) > 0) {
+      alleles <- as.data.frame(apply(tracked_mutation_events(), FUN=identify_allele_seq, MARGIN=1, tracked=tracked(), tree=associated_tree()))
+      allele_seq <- data.frame("lineage"=rownames(alleles), unite(alleles, "allele_seq", sep=""))
+      merge(allele_seq, coalescent_tree()[which(coalescent_tree()$generation == input$generations),], by="lineage")   
+    } else {
+      data.frame("lineage"=factor(), "allele_seq"=character(), "generation"=numeric(), "value"=numeric())
+    }
+  })
+  
+  output$tree_app2 <- renderPlot({
+    tree <- ggplot() +
+      theme_void() +
+      theme(legend.position="none") +
+      coord_fixed() +
+      geom_line(data=coalescent_tree(), aes(generation, value, group=lineage), size=1)
+    
+    if (max(as.numeric(polymorphisms()$allele))-1 > 0 & nrow(tracked_mutation_events()) > 0) {
+      tree +
+        geom_label(data=tracked_mutation_events(), aes(generation, value, label=paste(paste(mutation_order, ".", sep=""), paste(ancestral_allele, ">", derived_allele, sep="")))) +
+        geom_text(data=allele_seq(), aes(generation+(length(allele_seq[1])*input$generations/20), value, label=paste0(as.numeric(lineage)-(input$pop_size*input$ploidy*input$generations-input$pop_size*input$ploidy), ":", allele_seq)))
+    } else {
+      tree
+    }
+  }) 
+}
+
+run_coalescent_simulation()
+
+observeEvent(input$rerun_coalescent_simulation, {
+  run_coalescent_simulation()
+})
+```
